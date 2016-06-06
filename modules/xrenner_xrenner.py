@@ -2,43 +2,64 @@
 # -*- coding: utf-8 -*-
 
 """
-xrenner - eXternally configurable REference and Non-Named Entity Recognizer
-xrenner_xrenner.py
 Main class file for Xrenner() class
+
 Author: Amir Zeldes
 """
 
 from collections import OrderedDict
-from modules.xrenner_out import *
-from modules.xrenner_classes import *
-from modules.xrenner_coref import *
-from modules.xrenner_preprocess import *
-from modules.xrenner_marker import make_markable
-from modules.xrenner_lex import *
-from modules.xrenner_postprocess import postprocess_coref
-from modules.depedit import run_depedit
+from xrenner_out import *
+from xrenner_classes import *
+from xrenner_coref import *
+from xrenner_preprocess import *
+from xrenner_marker import make_markable
+from xrenner_lex import *
+from xrenner_postprocess import postprocess_coref
+from depedit import run_depedit
+import ntpath, os
 
 
 class Xrenner:
 
 	def __init__(self, model="eng", override=None):
 		"""
-		Main class for xrenner coreferencer
+		Main class for xrenner coreferencer. Invokes the load method to read model data.
+		
 		:param model:  model directory in models/ specifying settings and gazetteers for this language (default: eng)
 		:param override: name of a section in models/override.ini if configuration overrides should be applied
 		:return: void
 		"""
+		self.load(model, override)
 
+	def load(self, model="eng", override=None):
+		"""
+		Method to load model data. Normally invoked by constructor, but can be repeated to change models later.
+
+		:param model:  model directory in models/ specifying settings and gazetteers for this language (default: eng)
+		:param override: name of a section in models/override.ini if configuration overrides should be applied
+		:return: void
+		"""
 		self.model = model
 		self.override = override
 		self.lex = LexData(self.model, self.override)
 
 	def analyze(self, infile, out_format):
 		"""
-		:param infile: String representing a parse file in the conll10 format
+		Method to run coreference analysis with loaded model
+		
+		:param infile: file name of the parse file in the conll10 format, or the pre-read parse itself
 		:param format: format to determine output type, one of: html, paula, webanno, conll, onto, unittest
 		:return: output based on requested format
 		"""
+
+		# Check if this is a file name from the main script or a parse delivered in an import or unittest scenario
+		if "\t" in infile or isinstance(infile,list):  # This is a raw parse as string or list, not a file name
+			self.docpath = os.path.dirname(os.path.abspath("."))
+			self.docname = "untitled"
+		else:  # This is a file name, extract document name and path, then read the file
+			self.docpath = os.path.dirname(os.path.abspath(infile))
+			self.docname = clean_filename(ntpath.basename(infile))
+			infile = open(infile)
 
 		depedit_config = open(os.path.dirname(os.path.realpath(__file__)) + os.sep + ".." + os.sep + "models" + os.sep + self.model + os.sep + "depedit.ini")
 
@@ -156,7 +177,9 @@ class Xrenner:
 	def serialize_output(self, out_format, parse=None):
 		"""
 		Return a string representation of the output in some format, or generate PAULA directory structure as output
+		
 		:param out_format: the format to generate, one of: html, paula, webanno, conll, onto, unittest
+		:param parse: the original parse input fed to xrenner; only needed for unittest output
 		:return: specified output format string, or void for paula
 		"""
 		conll_tokens = self.conll_tokens
@@ -166,13 +189,13 @@ class Xrenner:
 			rtl = True if self.model in ["heb","ara"] else False
 			return output_HTML(conll_tokens, markstart_dict, markend_dict, rtl)
 		elif out_format == "paula":
-			output_PAULA(conll_tokens, markstart_dict, markend_dict)
+			output_PAULA(conll_tokens, markstart_dict, markend_dict, self.docname, self.docpath)
 		elif out_format == "webanno":
 			return output_webanno(conll_tokens[1:], markables)
 		elif out_format == "conll":
-			return output_conll(conll_tokens, markstart_dict, markend_dict, file, True)
+			return output_conll(conll_tokens, markstart_dict, markend_dict, self.docname, True)
 		elif out_format == "onto":
-			return output_onto(conll_tokens, markstart_dict, markend_dict, file)
+			return output_onto(conll_tokens, markstart_dict, markend_dict, self.docname)
 		elif out_format == "unittest":
 			from xrenner_test import generate_test
 			return generate_test(conll_tokens, markables, parse, self.model)
@@ -182,6 +205,7 @@ class Xrenner:
 	def process_sentence(self, tokoffset, sentence):
 		"""
 		Function to analyze a single sentence
+		
 		:param tokoffset: the offset in tokens for the beginning of the current sentence within all input tokens
 		:param sentence: the Sentence object containin mood, speaker and other information about this sentence
 		:return: void
@@ -219,6 +243,11 @@ class Xrenner:
 				if lex.filters["mod_func"].match(conll_tokens[int(child)].func) is not None:
 					token.modifiers.append(conll_tokens[int(child)])
 			token.head_text = conll_tokens[int(token.head)].text
+			# Check for lexical possessives to dynamically enhance hasa information
+			if lex.filters["possessive_func"].match(token.func) is not None:
+				# Check that neither possessor nor possessed is a pronoun
+				if lex.filters["pronoun_pos"].match(token.pos) is None and lex.filters["pronoun_pos"].match(conll_tokens[int(token.head)].pos) is None:
+					lex.hasa[token.text][conll_tokens[int(token.head)].text] += 2  # Increase by 2: 1 for attestation, 1 for pertinence in this document
 
 		# Find dead areas
 		for tok1 in conll_tokens[tokoffset + 1:]:
